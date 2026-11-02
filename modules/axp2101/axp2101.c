@@ -217,6 +217,24 @@ struct axp_platform_data {
 };
 
 int axp20x_match_device(struct axp20x_dev *axp20x);
+
+// What came of it, readable at any time from
+// /sys/module/axp2101/parameters/plug_wake_status -- the kernel log that
+// says the same has usually scrolled away by the time anyone asks.
+static char plug_wake_state[96] = "not probed";
+static char *plug_wake_status = plug_wake_state;
+
+static void plug_wake_set_status(const char *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	vsnprintf(plug_wake_state, sizeof(plug_wake_state), fmt, args);
+	va_end(args);
+}
+
+// Set when the PMIC interrupt had to be requested without a trigger type.
+static bool irq_trigger_fallback;
 int axp20x_device_probe(struct axp20x_dev *axp20x, struct axp_platform_data *pdata);
 int axp20x_device_remove(struct axp20x_dev *axp20x);
 
@@ -471,11 +489,24 @@ int axp20x_device_probe(struct axp20x_dev *axp20x, struct axp_platform_data *pda
 
 	if (axp20x->irq) {
 		// Level-low: the PMIC holds IRQ low until its status is cleared.
+		// Should the pin's controller refuse that type, the vendor's own
+		// flags (no trigger type) are used instead, so the PMIC and its
+		// cells come up either way; plug_wake_status says which it was.
 		ret = regmap_add_irq_chip(axp20x->regmap, axp20x->irq,
 					  IRQF_ONESHOT | IRQF_SHARED | IRQF_TRIGGER_LOW, -1,
 					  axp20x->regmap_irq_chip, &axp20x->regmap_irqc);
 		if (ret) {
+			dev_err(axp20x->dev, "irq chip with a level-low trigger: %d; retrying as the vendor driver does\n",
+				ret);
+			axp20x->regmap_irqc = NULL;
+			ret = regmap_add_irq_chip(axp20x->regmap, axp20x->irq, IRQF_ONESHOT | IRQF_SHARED, -1,
+						  axp20x->regmap_irq_chip, &axp20x->regmap_irqc);
+			if (!ret)
+				irq_trigger_fallback = true;
+		}
+		if (ret) {
 			dev_err(axp20x->dev, "failed to add irq chip: %d\n", ret);
+			plug_wake_set_status("failed: PMIC irq chip not added (irq %d): %d", axp20x->irq, ret);
 			return ret;
 		}
 	}
@@ -1789,22 +1820,42 @@ static void axp2101_vbus_wake_init(struct platform_device *pdev, struct axp20x_d
 {
 	int hwirq, virq, ret;
 
-	if (!plug_wake || !axp20x->irq || !axp20x->regmap_irqc)
+	// Every way out is said, at error level and in plug_wake_status: a
+	// failure here is otherwise invisible, the driver works on without it.
+	if (!plug_wake) {
+		plug_wake_set_status("off (plug_wake=0)");
 		return;
+	}
+	if (!axp20x->irq || !axp20x->regmap_irqc) {
+		plug_wake_set_status("failed: no PMIC interrupt (irq %d, chip %s)", axp20x->irq,
+				     axp20x->regmap_irqc ? "yes" : "no");
+		dev_err(&pdev->dev, "plug wake: %s\n", plug_wake_state);
+		return;
+	}
 	hwirq = platform_get_irq_byname(pdev, "usb in");
-	if (hwirq < 0)
+	if (hwirq < 0) {
+		plug_wake_set_status("failed: no \"usb in\" resource (%d)", hwirq);
+		dev_err(&pdev->dev, "plug wake: %s\n", plug_wake_state);
 		return;
+	}
 	virq = regmap_irq_get_virq(axp20x->regmap_irqc, hwirq);
-	if (virq <= 0)
+	if (virq <= 0) {
+		plug_wake_set_status("failed: no mapping for hwirq %d (%d)", hwirq, virq);
+		dev_err(&pdev->dev, "plug wake: %s\n", plug_wake_state);
 		return;
+	}
 	ret = request_threaded_irq(virq, NULL, axp2101_vbus_in_irq, IRQF_ONESHOT, "axp2101-vbus-in", info);
 	if (ret) {
-		dev_warn(&pdev->dev, "VBUS insert interrupt %d not requested: %d\n", virq, ret);
+		plug_wake_set_status("failed: irq %d (hwirq %d, parent %d) not requested: %d", virq, hwirq,
+				     axp20x->irq, ret);
+		dev_err(&pdev->dev, "plug wake: %s\n", plug_wake_state);
 		return;
 	}
 	info->vbus_irq = virq;
 	device_init_wakeup(&pdev->dev, true);
-	dev_info(&pdev->dev, "VBUS insert wakes the system (irq %d)\n", virq);
+	plug_wake_set_status("armed: irq %d (hwirq %d, parent %d, %s)", virq, hwirq, axp20x->irq,
+			     irq_trigger_fallback ? "vendor trigger" : "level-low");
+	dev_err(&pdev->dev, "plug wake: %s\n", plug_wake_state);
 }
 
 static int axp2101_charger_probe(struct platform_device *pdev)
@@ -1817,8 +1868,10 @@ static int axp2101_charger_probe(struct platform_device *pdev)
 	u8 chip_id;
 	int ret;
 
+	plug_wake_set_status("charger probe started");
 	if (!axp20x->irq) {
 		printk(KERN_ERR "axp2101: can not register axp2101-charger without irq\n\n");
+		plug_wake_set_status("failed: charger cell has no PMIC interrupt");
 		return -EINVAL;
 	}
 
@@ -1911,6 +1964,7 @@ static int axp2101_charger_probe(struct platform_device *pdev)
 	return 0;
 
 err:
+	plug_wake_set_status("failed: charger probe error %d", ret);
 	axp210x_info = NULL;
 	return ret;
 }
@@ -2162,6 +2216,8 @@ module_param(charge_voltage_limit, int, 0644);
 module_param(charge_term_current, int, 0644);
 module_param(dcdc3_always_pwmmode, int, 0644);
 module_param(plug_wake, bool, 0444);
+module_param(plug_wake_status, charp, 0444);
+MODULE_PARM_DESC(plug_wake_status, "What became of plug_wake (read only)");
 MODULE_PARM_DESC(plug_wake, "VBUS insert wakes the system from suspend (TempoTec V1 build; default 1)");
 
 MODULE_AUTHOR("Mattia D'Oronzo <doronzomattia26@icloud.com>");
