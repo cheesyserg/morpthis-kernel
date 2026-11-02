@@ -1,0 +1,14 @@
+# Structure offsets the V1 kernel's own modules use, read from their code
+# (stock v1.upt 1.2, module_driver/axp2101.ko):
+#   axp20x_i2c_probe:  addiu s2,a0,32 (&client->dev); lw s3,104(a0)
+#                      (dev_get_platdata); lw v0,376(s0) (client->irq);
+#                      sw s1,108(s0) (i2c_set_clientdata)
+#   axp2101_suspend:   lw s0,92(a0) (platform_get_drvdata)
+# scripts/build_modules.sh refuses a tree that disagrees: a struct device of
+# another size moves client->irq, which is how the PMIC driver once came up
+# with no interrupt.
+i2c_client_dev 32
+i2c_client_irq 376
+i2c_client_platform_data 104
+i2c_client_driver_data 108
+platform_device_driver_data 92

@@ -90,8 +90,15 @@ scripts/build_modules.sh out/
 Needs a MIPS cross compiler (`mipsel-linux-gnu-gcc`, e.g. Ubuntu's
 `gcc-10-mipsel-linux-gnu`; `CROSS_COMPILE` overrides). Without `KDIR` it builds
 against mainline linux-4.4.94 configured with the V1's own configuration --
-the machine is the one thing mainline lacks, and every option a module's ABI
-depends on is checked after configuring. The result must carry the V1
+the machine is the one thing mainline lacks. `MACH_XILFPGA` stands in for it
+(little-endian MIPS32r2 that, like the V1, requires GPIOLIB), every option the
+V1 has on and mainline defines is forced on, and the structure offsets are
+compared with the ones the V1's own vendor modules were compiled with
+(`v1/abi-offsets.txt`, read from the stock `axp2101.ko`). The first stand-in,
+Malta, dropped `GPIOLIB` (the gpiolib calls compiled to stubs) and `PINCTRL`
+(`struct device` four bytes short, so `client->irq` was read from the wrong
+place): the PMIC driver came up without its interrupt and the charger cell
+never started. Both are now build failures instead. The result must carry the V1
 kernel's vermagic, `4.4.94+ preempt mod_unload MIPS32_R2 32BIT`, or the
 script fails. Every symbol the module imports is a core kernel export present
 in the shipped image. With `KDIR` pointing at the real tree (what
