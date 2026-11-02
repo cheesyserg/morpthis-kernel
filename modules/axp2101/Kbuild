@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0
+obj-m += axp2101.o
+
+# The utils.ko symbols it calls (param_gpio_ops, param_pmu_ops,
+# i2c_register_device), so modpost records "depends=utils" as the vendor
+# module does.
+KBUILD_EXTRA_SYMBOLS := $(src)/hiby.symvers

@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   modules:
-    name: morpthis_led.ko for the V1 kernel
+    name: morpthis_led.ko and axp2101.ko for the V1 kernel
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -36,16 +36,19 @@ jobs:
             https://github.com/Starnished66/compas-firmware/releases/download/build-inputs/v1-zram-xImage
           sha256sum -c v1/v1-kernel.sha256
           python3 -I - <<'PY'
-          import re, subprocess, zlib
+          import glob, subprocess, zlib
           data = open("v1-zram-xImage", "rb").read()
           raw = zlib.decompressobj(31).decompress(data[data.find(b"\x1f\x8b\x08"):])
           magic = b"4.4.94+ preempt mod_unload MIPS32_R2 32BIT"
           assert magic in raw, "the shipped kernel's vermagic changed"
-          syms = subprocess.run(["mipsel-linux-gnu-nm", "-u", "out/morpthis_led.ko"],
-                                capture_output=True, text=True, check=True).stdout.split()
-          missing = [s for s in syms if s != "U" and b"\0" + s.encode() + b"\0" not in raw]
-          assert not missing, f"not exported by the V1 kernel: {missing}"
-          print("every import is in the shipped kernel")
+          # Symbols the V1's vendor modules export (utils.ko for axp2101).
+          vendor = {l.strip() for l in open("v1/board/hiby-exports.txt") if l.strip() and not l.startswith("#")}
+          for ko in sorted(glob.glob("out/*.ko")):
+              syms = subprocess.run(["mipsel-linux-gnu-nm", "-u", ko],
+                                    capture_output=True, text=True, check=True).stdout.split()
+              missing = [s for s in syms if s != "U" and b"\0" + s.encode() + b"\0" not in raw and s not in vendor]
+              assert not missing, f"{ko}: not exported by the V1 kernel or its vendor modules: {missing}"
+              print(f"{ko}: every import is in the shipped kernel or the vendor modules")
           PY
 
       - uses: actions/upload-artifact@v4

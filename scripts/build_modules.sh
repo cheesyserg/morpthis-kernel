@@ -2,9 +2,12 @@
 #
 # Builds the Morpthis kernel modules for the TempoTec V1 kernel that the
 # firmware packer installs (v1-zram-xImage, Linux 4.4.94+, see
-# v1/kernel.json). Today that is one module:
+# v1/kernel.json):
 #
 #   morpthis_led.ko   the status light's engine (modules/morpthis_led/)
+#   axp2101.ko        the PMIC driver, open, with VBUS insert as a wake
+#                     source (modules/axp2101/); a drop-in for the vendor
+#                     module of the same name, which it imports utils.ko from
 #
 # Usage:
 #   scripts/build_modules.sh OUT_DIR
@@ -155,11 +158,13 @@ grep -q "\"$VERSION+\"" "$KDIR/include/generated/utsrelease.h" ||
 	die "$KDIR builds for $(cat "$KDIR/include/generated/utsrelease.h"), not $VERSION+"
 
 mkdir -p "$OUT"
-for mod in morpthis_led; do
+for mod in ${MODULES:-morpthis_led axp2101}; do
 	src="$WORK/src-$mod"
 	rm -rf "$src"
 	mkdir -p "$src"
-	cp "$ROOT/modules/$mod"/*.c "$ROOT/modules/$mod/Kbuild" "$src/"
+	# Sources, Kbuild and the symbol lists of the vendor modules a module
+	# calls (hiby.symvers); the Makefile is for building by hand.
+	find "$ROOT/modules/$mod" -maxdepth 1 -type f ! -name Makefile -exec cp {} "$src/" \;
 	"${MK[@]}" -C "$KDIR" M="$src" KCFLAGS="$KCFLAGS_EXTRA" modules
 	ko="$src/$mod.ko"
 	[ -f "$ko" ] || die "$mod.ko was not built"
