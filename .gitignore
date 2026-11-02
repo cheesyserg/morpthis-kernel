@@ -1,0 +1,10 @@
+/.build/
+/out/
+/kit/out/*
+!/kit/out/.keep
+*.ko
+*.o
+*.mod.c
+*.cmd
+modules.order
+Module.symvers

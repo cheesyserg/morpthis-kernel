@@ -1,0 +1,55 @@
+name: Build kernel modules
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  modules:
+    name: morpthis_led.ko for the V1 kernel
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the MIPS cross compiler
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gcc-10-mipsel-linux-gnu binutils-mipsel-linux-gnu bc
+
+      # The prepared mainline tree depends only on the pinned configuration.
+      - name: Restore the prepared kernel tree
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: kernel-4.4.94-${{ hashFiles('v1/configs/tempotec_v1-final.config', 'scripts/build_modules.sh') }}
+
+      - name: Build
+        run: scripts/build_modules.sh out
+
+      - name: Check the imports against the shipped kernel
+        run: |
+          curl -fsSL --retry 4 -o v1-zram-xImage \
+            https://github.com/Starnished66/compas-firmware/releases/download/build-inputs/v1-zram-xImage
+          sha256sum -c v1/v1-kernel.sha256
+          python3 -I - <<'PY'
+          import re, subprocess, zlib
+          data = open("v1-zram-xImage", "rb").read()
+          raw = zlib.decompressobj(31).decompress(data[data.find(b"\x1f\x8b\x08"):])
+          magic = b"4.4.94+ preempt mod_unload MIPS32_R2 32BIT"
+          assert magic in raw, "the shipped kernel's vermagic changed"
+          syms = subprocess.run(["mipsel-linux-gnu-nm", "-u", "out/morpthis_led.ko"],
+                                capture_output=True, text=True, check=True).stdout.split()
+          missing = [s for s in syms if s != "U" and b"\0" + s.encode() + b"\0" not in raw]
+          assert not missing, f"not exported by the V1 kernel: {missing}"
+          print("every import is in the shipped kernel")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: morpthis-kernel-modules-${{ github.sha }}
+          path: out/*.ko
+          if-no-files-found: error
